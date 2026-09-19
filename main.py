@@ -1,3 +1,5 @@
+import logging
+import urllib.parse
 from datetime import datetime
 from typing import List, Optional
 import httpx
@@ -9,6 +11,8 @@ import models
 import schemas
 import crud
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 Base.metadata.create_all(bind=engine)
 
@@ -66,21 +70,26 @@ async def update_temperatures(db: Session = Depends(get_db)):
     async with httpx.AsyncClient() as client:
         for city in cities:
             try:
-                geo_url = f"https://open-meteo.com{city.name}&count=1&language=en&format=json"
+                encoded_name = urllib.parse.quote(city.name)
+
+                geo_url = f"https://open-meteo.com{encoded_name}&count=1&language=en&format=json"
                 geo_response = await client.get(geo_url, timeout=10.0)
+                geo_response.raise_for_status()
                 geo_data = geo_response.json()
 
                 if not geo_data.get("results"):
+                    logger.warning(f"Coordinates not found for city: {city.name}")
                     continue
                 
                 lat = geo_data["results"][0]["latitude"]
                 lon = geo_data["results"][0]["longitude"]
 
-                weather_url = f"https://open-meteo.com{lat}&longitude={lon}&current_weather=true"
+                weather_url = f"https://open-meteo.com{lat}&longitude={lon}&current=current_weather"
                 weather_response = await client.get(weather_url, timeout=10.0)
+                weather_response.raise_for_status()
                 weather_data = weather_response.json()
 
-                current_temp = weather_data["current_weather"]["temperature"]
+                current_temp = weather_data["current"]["temperature_2m"]
 
                 crud.create_temperature_record(
                     db=db, 
@@ -89,7 +98,9 @@ async def update_temperatures(db: Session = Depends(get_db)):
                     timestamp=timestamp
                 )
                 updated_count += 1
+                
             except Exception as e:
+                logger.error(f"Failed to update temperature for {city.name}: {str(e)}")
                 continue
 
     return {"message": f"Successfully updated temperatures for {updated_count} cities."}
