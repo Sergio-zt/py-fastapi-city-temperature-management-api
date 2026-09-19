@@ -71,26 +71,32 @@ async def update_temperatures(db: Session = Depends(get_db)):
         for city in cities:
             try:
                 encoded_name = urllib.parse.quote(city.name)
-
-                geo_url = f"https://open-meteo.com{encoded_name}&count=1&language=en&format=json"
+                geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={encoded_name}"
                 geo_response = await client.get(geo_url, timeout=10.0)
                 geo_response.raise_for_status()
                 geo_data = geo_response.json()
 
-                if not geo_data.get("results"):
-                    logger.warning(f"Coordinates not found for city: {city.name}")
+                if not geo_data.get("results") or not isinstance(geo_data["results"], list):
+                    logger.warning(f"Coordinates not found or invalid format for city: {city.name}")
                     continue
-                
-                lat = geo_data["results"][0]["latitude"]
-                lon = geo_data["results"][0]["longitude"]
+                first_result = geo_data["results"][0]
+                lat = first_result.get("latitude")
+                lon = first_result.get("longitude")
 
-                weather_url = f"https://open-meteo.com{lat}&longitude={lon}&current=current_weather"
+                if lat is None or lon is None:
+                    logger.warning(f"Missing latitude/longitude fields for city: {city.name}")
+                    continue
+
+                weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
                 weather_response = await client.get(weather_url, timeout=10.0)
                 weather_response.raise_for_status()
                 weather_data = weather_response.json()
+                current_weather = weather_data.get("current_weather")
+                if not current_weather or "temperature" not in current_weather:
+                    logger.warning(f"Temperature data missing in API response for city: {city.name}")
+                    continue
 
-                current_temp = weather_data["current"]["temperature_2m"]
-
+                current_temp = current_weather["temperature"]
                 crud.create_temperature_record(
                     db=db, 
                     city_id=city.id, 
